@@ -1,0 +1,361 @@
+import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:xterm/xterm.dart';
+import 'package:flutter_pty/flutter_pty.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.blue,
+        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+      ),
+      home: const MyCustomUI(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class FuncKeyIntent extends Intent {
+  final String label;
+  const FuncKeyIntent(this.label);
+}
+
+class MyCustomUI extends StatefulWidget {
+  const MyCustomUI({super.key});
+
+  @override
+  State<MyCustomUI> createState() => _MyCustomUIState();
+}
+
+class _MyCustomUIState extends State<MyCustomUI> {
+  final GlobalKey<PopupMenuButtonState<String>> _menuKey = GlobalKey();
+  final FocusNode _menuFocusNode = FocusNode();
+
+  String _lastPressed = "キーボードの矢印キーで移動できます";
+  String _currentSelection = "";
+
+  final List<Map<String, dynamic>> _openWindows = [];
+
+  // メニューバーのボタンの高さを統一するための定数
+  static const double _buttonHeight = 32.0;
+
+  void _openTerminalWindow() {
+    Terminal terminal = Terminal();
+    Pty pty = Pty.start('bash', columns: 80, rows: 24);
+    FocusNode terminalFocus = FocusNode();
+
+    pty.output.listen((data) {
+      terminal.write(utf8.decode(data, allowMalformed: true));
+    });
+    terminal.onOutput = (data) {
+      pty.write(Uint8List.fromList(utf8.encode(data)));
+    };
+
+    setState(() {
+      _openWindows.add({
+        'id': DateTime.now().toString(),
+        'title': 'ターミナル (bash)',
+        'content': TerminalView(terminal, focusNode: terminalFocus),
+        'pty': pty,
+        'focusNode': terminalFocus,
+        'x': 50.0 + (_openWindows.length * 20),
+        'y': 50.0 + (_openWindows.length * 20),
+        'width': 500.0,
+        'height': 350.0,
+        'isMaximized': false,
+        'isMinimized': false,
+        'preMaxX': 0.0, 'preMaxY': 0.0, 'preMaxWidth': 0.0, 'preMaxHeight': 0.0,
+      });
+    });
+
+    Future.delayed(const Duration(milliseconds: 100), () {
+      terminalFocus.requestFocus();
+    });
+  }
+
+  // --- ウィンドウ制御ボタン（Tab巡回対応） ---
+  Widget _buildWindowControlButton(IconData icon, double orderValue, VoidCallback onPressed, {Color? bgColor}) {
+    return FocusTraversalOrder(
+      order: NumericFocusOrder(orderValue), // Tabキーの順番を数値で指定
+      child: Padding(
+        padding: const EdgeInsets.only(left: 4.0),
+        child: SizedBox(
+          width: 28,
+          height: 24,
+          child: ElevatedButton(
+            onPressed: onPressed,
+            style: ElevatedButton.styleFrom(
+              padding: EdgeInsets.zero,
+              backgroundColor: bgColor ?? Colors.grey[700],
+              foregroundColor: Colors.white,
+              shape: const RoundedRectangleBorder(),
+              // Tabキーでフォーカスが当たった時に白く光らせて視認性を上げる
+              focusColor: Colors.white54, 
+            ),
+            child: Icon(icon, size: 16),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingWindow(int index, BoxConstraints constraints) {
+    var win = _openWindows[index];
+    bool isMinimized = win['isMinimized'];
+    bool isMaximized = win['isMaximized'];
+
+    // 子ウィンドウごとのTab巡回ベース順序 (1つ目は10.x, 2つ目は20.x...)
+    double baseOrder = (index + 1) * 10.0;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black,
+        border: Border.all(color: Colors.grey[600]!, width: 2),
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10, offset: Offset(5, 5))],
+      ),
+      child: Column(
+        children: [
+          // タイトルバー
+          GestureDetector(
+            onPanUpdate: isMaximized ? null : (details) {
+              setState(() {
+                win['x'] += details.delta.dx; win['y'] += details.delta.dy;
+              });
+            },
+            child: Container(
+              color: Colors.blue[900],
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              height: 30,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(win['title'], style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
+                  ),
+                  // 最小化ボタン (Tab順序: 10.1)
+                  _buildWindowControlButton(Icons.remove, baseOrder + 0.1, () {
+                    setState(() => win['isMinimized'] = !isMinimized);
+                  }),
+                  // 最大化ボタン (Tab順序: 10.2)
+                  _buildWindowControlButton(isMaximized ? Icons.filter_none : Icons.crop_square, baseOrder + 0.2, () {
+                    setState(() {
+                      if (isMaximized) {
+                        win['x'] = win['preMaxX']; win['y'] = win['preMaxY'];
+                        win['width'] = win['preMaxWidth']; win['height'] = win['preMaxHeight'];
+                        win['isMaximized'] = false;
+                      } else {
+                        win['preMaxX'] = win['x']; win['preMaxY'] = win['y'];
+                        win['preMaxWidth'] = win['width']; win['preMaxHeight'] = win['height'];
+                        win['x'] = 0.0; win['y'] = 0.0;
+                        win['width'] = constraints.maxWidth; win['height'] = constraints.maxHeight;
+                        win['isMaximized'] = true;
+                      }
+                    });
+                  }),
+                  // 閉じるボタン (Tab順序: 10.3)
+                  _buildWindowControlButton(Icons.close, baseOrder + 0.3, () {
+                    setState(() {
+                      if (win['pty'] != null) (win['pty'] as Pty).kill();
+                      _openWindows.removeAt(index);
+                    });
+                  }, bgColor: Colors.red[700]),
+                ],
+              ),
+            ),
+          ),
+          // コンテンツ部分 (Tab順序: 10.4)
+          if (!isMinimized)
+            Expanded(
+              child: FocusTraversalOrder(
+                order: NumericFocusOrder(baseOrder + 0.4),
+                child: ClipRRect(child: win['content']),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _handleAction(String label) {
+    setState(() {
+      _lastPressed = "$label が押されました";
+      _currentSelection = label;
+    });
+
+    if (label == 'ESC') {
+      _menuFocusNode.requestFocus();
+      setState(() => _lastPressed = "ESC: メニューバーにフォーカスを戻しました");
+    }
+  }
+
+  void _handleShowMenu() {
+    final RenderBox renderBox = _menuKey.currentContext?.findRenderObject() as RenderBox;
+    final Offset offset = renderBox.localToGlobal(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(offset.dx, offset.dy - 250, offset.dx + renderBox.size.width, offset.dy),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: Colors.grey[700]!, width: 1)),
+      items: [
+        const PopupMenuItem(value: 'exit', child: ListTile(leading: Icon(Icons.exit_to_app, color: Colors.red, size: 20), title: Text('終了', style: TextStyle(color: Colors.red)), dense: true)),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'sys_info', child: ListTile(leading: Icon(Icons.computer, size: 20), title: Text('システム情報 (uname)'), dense: true)),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'refresh', child: ListTile(leading: Icon(Icons.refresh, size: 20), title: Text('情報の更新'), dense: true)),
+        const PopupMenuItem(value: 'terminal', child: ListTile(leading: Icon(Icons.terminal, size: 20), title: Text('ターミナル'), dense: true)),
+      ],
+    ).then((value) {
+      if (value != null) _handleMenuAction(value);
+      setState(() => _currentSelection = "");
+    });
+  }
+
+  void _handleMenuAction(String value) {
+    setState(() => _currentSelection = "");
+    switch (value) {
+      case 'terminal': _openTerminalWindow(); break;
+      case 'refresh': setState(() => _lastPressed = "情報を更新しました"); break;
+      case 'sys_info':
+        Process.run('uname', ['-a']).then((result) => setState(() => _lastPressed = "System: ${result.stdout}"));
+        break;
+      case 'exit': exit(0);
+    }
+  }
+
+  // 下部キーボタン（Tab巡回対応）
+  Widget _buildKeyButton(String label, double orderValue, {Color? defaultColor}) {
+    bool isSelected = _currentSelection == label;
+    bool isEsc = label == "ESC";
+
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2.0),
+        child: FocusTraversalOrder(
+          order: NumericFocusOrder(orderValue), // Tab順序を指定
+          child: SizedBox(
+            height: _buttonHeight, // 高さを固定
+            child: ElevatedButton(
+              onFocusChange: (hasFocus) {
+                if (hasFocus) setState(() { _currentSelection = label; _lastPressed = "$label にフォーカス中"; });
+              },
+              style: ElevatedButton.styleFrom(
+                padding: EdgeInsets.zero,
+                backgroundColor: (isSelected && !isEsc) ? Colors.yellow : (defaultColor ?? Colors.grey[800]),
+                foregroundColor: (isSelected && !isEsc) ? Colors.black : Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+              ),
+              onPressed: () => _handleAction(label),
+              child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        LogicalKeySet(LogicalKeyboardKey.escape): const FuncKeyIntent('ESC'),
+        for (var i = 1; i <= 12; i++) LogicalKeySet(LogicalKeyboardKey(0x110000000 + i)): FuncKeyIntent('F$i'),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          FuncKeyIntent: CallbackAction<FuncKeyIntent>(onInvoke: (intent) => _handleAction(intent.label)),
+        },
+        child: Scaffold(
+          body: FocusTraversalGroup(
+            policy: OrderedTraversalPolicy(), // 数値順（NumericFocusOrder）でフォーカスを移動させる設定
+            child: Column(
+              children: [
+                // --- MDI領域 ---
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      border: Border.all(color: Colors.grey[700]!, width: 2),
+                    ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        return Stack(
+                          children: [
+                            Center(child: Text(_lastPressed, style: const TextStyle(fontSize: 18, color: Colors.greenAccent, fontFamily: 'monospace'))),
+                            for (int i = 0; i < _openWindows.length; i++)
+                              Positioned(
+                                left: _openWindows[i]['x'], top: _openWindows[i]['y'], width: _openWindows[i]['width'],
+                                height: _openWindows[i]['isMinimized'] ? 34.0 : _openWindows[i]['height'],
+                                child: _buildFloatingWindow(i, constraints),
+                              ),
+                          ],
+                        );
+                      }
+                    ),
+                  ),
+                ),
+
+                // --- 下部メニューバー ---
+                Container(
+                  color: Colors.black87,
+                  padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                  child: Row(
+                    children: [
+                      // ■ メニューボタン (Tab順序: 1.0)
+                      FocusTraversalOrder(
+                        order: const NumericFocusOrder(1.0),
+                        child: SizedBox(
+                          width: _buttonHeight, // 高さと同じ幅にして正円に
+                          height: _buttonHeight,
+                          child: Focus(
+                            focusNode: _menuFocusNode,
+                            onKeyEvent: (node, event) {
+                              if (event is KeyDownEvent && (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.space)) {
+                                _handleShowMenu(); return KeyEventResult.handled;
+                              }
+                              return KeyEventResult.ignored;
+                            },
+                            onFocusChange: (hasFocus) {
+                              if (hasFocus) setState(() => _currentSelection = "Menu");
+                            },
+                            child: GestureDetector(
+                              onTap: _handleShowMenu,
+                              child: Container(
+                                key: _menuKey,
+                                decoration: BoxDecoration(
+                                  color: _currentSelection == "Menu" ? Colors.yellow : Colors.transparent,
+                                  shape: BoxShape.circle, // 正円を描画
+                                ),
+                                child: const Center(child: Icon(Icons.square, color: Colors.white, size: 20)),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      // F1 〜 F12 (Tab順序: 1.01 〜 1.12)
+                      ...List.generate(12, (index) => _buildKeyButton("F${index + 1}", 1.0 + ((index + 1) * 0.01))),
+                      // ESC (Tab順序: 1.13)
+                      _buildKeyButton("ESC", 1.13, defaultColor: Colors.red[900]),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

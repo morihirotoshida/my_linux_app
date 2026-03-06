@@ -1,0 +1,293 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+// xterm と flutter_pty のインポート
+import 'package:xterm/xterm.dart';
+import 'package:flutter_pty/flutter_pty.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.blue,
+        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+      ),
+      home: const MyCustomUI(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class FuncKeyIntent extends Intent {
+  final String label;
+  const FuncKeyIntent(this.label);
+}
+
+class MyCustomUI extends StatefulWidget {
+  const MyCustomUI({super.key});
+
+  @override
+  State<MyCustomUI> createState() => _MyCustomUIState();
+}
+
+class _MyCustomUIState extends State<MyCustomUI> {
+  final GlobalKey<PopupMenuButtonState<String>> _menuKey = GlobalKey();
+  String _lastPressed = "キーボードの矢印キーで移動できます";
+  String _currentSelection = "";
+
+  // ターミナル用の変数を追加（初期化前エラーを防ぐため nullable にしています）
+  Terminal? _terminal;
+  Pty? _pty;
+  bool _isTerminalMode = false;
+
+  // ターミナルの初期化処理
+  void _initTerminal() {
+    // 既に起動済みの場合は何もしない
+    if (_terminal != null) return;
+
+    _terminal = Terminal();
+    // Linuxの標準シェル(bash)を起動
+    _pty = Pty.start('bash', columns: 80, rows: 24);
+
+    // シェルの出力をターミナルウィジェットに送る
+    _pty!.output.listen((data) => _terminal!.write(data));
+    // ターミナルの入力をシェルに送る
+    _terminal!.onOutput = (data) => _pty!.write(data);
+  }
+
+  void _handleAction(String label) {
+    setState(() {
+      // ターミナルモード中にFキーなどが押された場合の動作もここに集約されます
+      _lastPressed = "$label が押されました";
+      _currentSelection = label;
+    });
+  }
+
+  void _handleShowMenu() {
+    final RenderBox renderBox = _menuKey.currentContext?.findRenderObject() as RenderBox;
+    final Offset offset = renderBox.localToGlobal(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        offset.dx,
+        offset.dy - 250,
+        offset.dx + renderBox.size.width,
+        offset.dy,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: Colors.grey[700]!, width: 1),
+      ),
+      items: [
+        const PopupMenuItem(
+          value: 'exit',
+          child: ListTile(
+            leading: Icon(Icons.exit_to_app, color: Colors.red, size: 20),
+            title: Text('終了', style: TextStyle(color: Colors.red)),
+            dense: true,
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'sys_info',
+          child: ListTile(
+            leading: Icon(Icons.computer, size: 20),
+            title: Text('システム情報 (uname)'),
+            dense: true,
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'refresh',
+          child: ListTile(
+            leading: Icon(Icons.refresh, size: 20),
+            title: Text('情報の更新'),
+            dense: true,
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'terminal',
+          child: ListTile(
+            leading: Icon(Icons.terminal, size: 20),
+            title: Text('ターミナル'),
+            dense: true,
+          ),
+        ),
+      ],
+    ).then((value) {
+      if (value != null) _handleMenuAction(value);
+      setState(() => _currentSelection = "");
+    });
+  }
+
+  void _handleMenuAction(String value) {
+    setState(() => _currentSelection = "");
+    switch (value) {
+      case 'terminal':
+        setState(() {
+          _isTerminalMode = true;
+          _initTerminal(); // ターミナルを起動
+        });
+        break;
+      case 'refresh':
+        setState(() {
+          _isTerminalMode = false; // 更新時は通常モードに戻す設定（お好みで変更可）
+          _lastPressed = "情報を更新しました（${DateTime.now().toString().split('.')[0]}）";
+        });
+        break;
+      case 'sys_info':
+        setState(() => _isTerminalMode = false); // ターミナルを閉じて結果を表示
+        Process.run('uname', ['-a']).then((result) {
+          setState(() => _lastPressed = "System: ${result.stdout}");
+        });
+        break;
+      case 'exit':
+        exit(0);
+    }
+  }
+
+  Widget _buildKeyButton(String label, {Color? defaultColor}) {
+    bool isSelected = _currentSelection == label;
+    bool isEsc = label == "ESC";
+
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2.0),
+        child: ElevatedButton(
+          onFocusChange: (hasFocus) {
+            if (hasFocus) {
+              setState(() {
+                _currentSelection = label;
+                _lastPressed = "$label にフォーカス中";
+              });
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            backgroundColor: (isSelected && !isEsc) ? Colors.yellow : (defaultColor ?? Colors.grey[800]),
+            foregroundColor: (isSelected && !isEsc) ? Colors.black : Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          ),
+          onPressed: () => _handleAction(label),
+          child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        LogicalKeySet(LogicalKeyboardKey.escape): const FuncKeyIntent('ESC'),
+        for (var i = 1; i <= 12; i++)
+          LogicalKeySet(LogicalKeyboardKey(0x110000000 + i)): FuncKeyIntent('F$i'),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          FuncKeyIntent: CallbackAction<FuncKeyIntent>(
+            onInvoke: (intent) => _handleAction(intent.label),
+          ),
+        },
+        child: FocusTraversalGroup(
+          policy: OrderedTraversalPolicy(),
+          child: Focus(
+            autofocus: true,
+            child: Scaffold(
+              body: Column(
+                children: [
+                  // --- メイン画面（メッセージとターミナルの切り替え） ---
+                  Expanded(
+                    child: Container(
+                      margin: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey[700]!),
+                        borderRadius: BorderRadius.circular(8),
+                        // ターミナルモードの時は背景を真っ黒に近づける
+                        color: _isTerminalMode ? Colors.black : Colors.transparent,
+                      ),
+                      // ターミナルモードかどうかの条件分岐
+                      child: _isTerminalMode && _terminal != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: TerminalView(_terminal!), // 本物のターミナルを表示
+                            )
+                          : Center(
+                              child: SingleChildScrollView(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16.0),
+                                  child: Text(
+                                    _lastPressed,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontSize: 18, 
+                                      color: Colors.greenAccent, 
+                                      fontFamily: 'monospace'
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+
+                  // --- 下部メニューバー（常時表示） ---
+                  Container(
+                    color: Colors.black87,
+                    padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 40,
+                          child: Focus(
+                            onKeyEvent: (node, event) {
+                              if (event is KeyDownEvent && 
+                                  (event.logicalKey == LogicalKeyboardKey.enter || 
+                                   event.logicalKey == LogicalKeyboardKey.space)) {
+                                _handleShowMenu(); 
+                                return KeyEventResult.handled;
+                              }
+                              return KeyEventResult.ignored;
+                            },
+                            onFocusChange: (hasFocus) {
+                              if (hasFocus) setState(() => _currentSelection = "Menu");
+                            },
+                            child: GestureDetector(
+                              onTap: _handleShowMenu,
+                              child: Container(
+                                key: _menuKey,
+                                decoration: BoxDecoration(
+                                  color: _currentSelection == "Menu" ? Colors.yellow : Colors.transparent,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Center(
+                                  child: Icon(Icons.square, color: Colors.white, size: 24),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        ...List.generate(12, (index) => _buildKeyButton("F${index + 1}")),
+                        _buildKeyButton("ESC", defaultColor: Colors.red[900]),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

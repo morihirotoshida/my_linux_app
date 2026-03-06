@@ -1,0 +1,137 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      // 標準のダークテーマを適用
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.blue,
+        scaffoldBackgroundColor: const Color(0xFF1E1E1E), // 背景を少し深みのある黒に
+      ),
+      home: const MyCustomUI(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class FuncKeyIntent extends Intent {
+  final String label;
+  const FuncKeyIntent(this.label);
+}
+
+class MyCustomUI extends StatefulWidget {
+  const MyCustomUI({super.key});
+
+  @override
+  State<MyCustomUI> createState() => _MyCustomUIState();
+}
+
+class _MyCustomUIState extends State<MyCustomUI> {
+  String _lastPressed = "キーを押してください";
+
+  void _handleKeyPress(String label) {
+    setState(() {
+      _lastPressed = "$label が押されました";
+    });
+  }
+
+  // ボタンを生成する共通メソッド
+  Widget _buildKeyButton(String label, {Color? color}) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2.0),
+        child: ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            backgroundColor: color ?? Colors.grey[800],
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4), // 少し角を丸く
+            ),
+          ),
+          onPressed: () => _handleKeyPress(label),
+          child: Text(
+            label, 
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        LogicalKeySet(LogicalKeyboardKey.escape): const FuncKeyIntent('ESC'),
+        for (var i = 1; i <= 12; i++)
+          LogicalKeySet(LogicalKeyboardKey(0x110000000 + i)): FuncKeyIntent('F$i'),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          FuncKeyIntent: CallbackAction<FuncKeyIntent>(
+            onInvoke: (intent) => _handleKeyPress(intent.label),
+          ),
+        },
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            body: Column(
+              children: [
+                // メインコンテンツエリア
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey[700]!),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        _lastPressed,
+                        style: const TextStyle(fontSize: 24, color: Colors.greenAccent),
+                      ),
+                    ),
+                  ),
+                ),
+
+                // 最下部のボタンバー
+                Container(
+                  color: Colors.black87,
+                  padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                  child: Row(
+                    children: [
+                      // メニューアイコン (■)
+                      SizedBox(
+                        width: 40,
+                        child: IconButton(
+                          icon: const Icon(Icons.square, color: Colors.white),
+                          onPressed: () => _handleKeyPress("Menu"),
+                        ),
+                      ),
+
+                      // F1 〜 F12
+                      ...List.generate(12, (index) => _buildKeyButton("F${index + 1}")),
+
+                      // ESC
+                      _buildKeyButton("ESC", color: Colors.red[900]),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
