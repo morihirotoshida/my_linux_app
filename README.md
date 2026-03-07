@@ -20,9 +20,9 @@ Flutter will help you with the following information.
 
 on Terminal
 
-cd my_linux_app
-flutter pub add xterm
-flutter pub add flutter_pty
+cd my_linux_app  
+flutter pub add xterm  
+flutter pub add flutter_pty  
 
 .
 
