@@ -1,0 +1,156 @@
+import 'dart:io'; // 必須：Linuxコマンド実行用
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.blue,
+        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+      ),
+      home: const MyCustomUI(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class FuncKeyIntent extends Intent {
+  final String label;
+  const FuncKeyIntent(this.label);
+}
+
+class MyCustomUI extends StatefulWidget {
+  const MyCustomUI({super.key});
+
+  @override
+  State<MyCustomUI> createState() => _MyCustomUIState();
+}
+
+class _MyCustomUIState extends State<MyCustomUI> {
+  String _lastPressed = "キーまたはメニューを選択してください";
+
+  // キーやボタンが押された時の共通処理
+  void _handleAction(String label) {
+    setState(() {
+      _lastPressed = "$label が押されました";
+    });
+  }
+
+  // メニュー専用の処理
+  void _handleMenuAction(String value) {
+    switch (value) {
+      case 'refresh':
+        setState(() => _lastPressed = "表示をリフレッシュしました");
+        break;
+      case 'sys_info':
+        // Linuxの 'uname -a' コマンドを実行
+        Process.run('uname', ['-a']).then((result) {
+          setState(() => _lastPressed = "System: ${result.stdout}");
+        });
+        break;
+      case 'exit':
+        exit(0); // アプリを終了
+    }
+  }
+
+  Widget _buildKeyButton(String label, {Color? color}) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2.0),
+        child: ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            backgroundColor: color ?? Colors.grey[800],
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          ),
+          onPressed: () => _handleAction(label),
+          child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        LogicalKeySet(LogicalKeyboardKey.escape): const FuncKeyIntent('ESC'),
+        for (var i = 1; i <= 12; i++)
+          LogicalKeySet(LogicalKeyboardKey(0x110000000 + i)): FuncKeyIntent('F$i'),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          FuncKeyIntent: CallbackAction<FuncKeyIntent>(
+            onInvoke: (intent) => _handleAction(intent.label),
+          ),
+        },
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            body: Column(
+              children: [
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey[700]!),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: SingleChildScrollView( // 長いテキストも見れるように
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Text(
+                            _lastPressed,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 18, color: Colors.greenAccent, fontFamily: 'monospace'),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Container(
+                  color: Colors.black87,
+                  padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                  child: Row(
+                    children: [
+                      // ■ メニューボタン
+                      SizedBox(
+                        width: 40,
+                        child: PopupMenuButton<String>(
+                          icon: const Icon(Icons.square, color: Colors.white),
+                          onSelected: _handleMenuAction,
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(value: 'refresh', child: Text('情報を更新')),
+                            const PopupMenuItem(value: 'sys_info', child: Text('システム情報 (uname)')),
+                            const PopupMenuDivider(),
+                            const PopupMenuItem(value: 'exit', child: Text('終了', style: TextStyle(color: Colors.red))),
+                          ],
+                        ),
+                      ),
+                      // F1 〜 F12
+                      ...List.generate(12, (index) => _buildKeyButton("F${index + 1}")),
+                      // ESC
+                      _buildKeyButton("ESC", color: Colors.red[900]),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

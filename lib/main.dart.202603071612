@@ -1,0 +1,497 @@
+import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:xterm/xterm.dart';
+import 'package:flutter_pty/flutter_pty.dart';
+import 'package:window_manager/window_manager.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.blue,
+        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+      ),
+      home: const MyCustomUI(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class FuncKeyIntent extends Intent {
+  final String label;
+  const FuncKeyIntent(this.label);
+}
+
+class MyCustomUI extends StatefulWidget {
+  const MyCustomUI({super.key});
+
+  @override
+  State<MyCustomUI> createState() => _MyCustomUIState();
+}
+
+// 登録情報を保持するグローバル変数
+List<String?> _regNames = List.filled(12, null);
+List<String?> _regCommands = List.filled(12, null);
+int _launcherIndex = -1;
+
+class _MyCustomUIState extends State<MyCustomUI> {
+  final GlobalKey<PopupMenuButtonState<String>> _menuKey = GlobalKey();
+  final FocusNode _menuFocusNode = FocusNode();
+  String _lastPressed = "キーボードの矢印キーで移動できます";
+  String _currentSelection = "";
+  final List<Map<String, dynamic>> _openWindows = [];
+  static const double _buttonHeight = 32.0;
+
+  // --- 内部エディターウィンドウを開く ---
+  void _openInternalEditorWindow() {
+    FocusNode editorFocus = FocusNode();
+    editorFocus.addListener(() { if (mounted) setState(() {}); });
+
+    _addWindowToMDI(
+      title: 'エディター (内部アプリ)',
+      focusNode: editorFocus,
+      content: const MyInternalEditor(),
+      width: 600.0,
+      height: 400.0,
+    );
+  }
+
+  // --- ターミナルウィンドウを開く ---
+  void _openTerminalWindow() {
+    Terminal terminal = Terminal();
+    Pty pty = Pty.start('bash', arguments: ['-l'], environment: Platform.environment);
+    FocusNode terminalFocus = FocusNode();
+    terminalFocus.addListener(() { if (mounted) setState(() {}); });
+    pty.output.listen((data) => terminal.write(utf8.decode(data, allowMalformed: true)));
+    terminal.onOutput = (data) => pty.write(Uint8List.fromList(utf8.encode(data)));
+    
+    _addWindowToMDI(
+      title: 'ターミナル (bash)',
+      focusNode: terminalFocus,
+      content: TerminalView(terminal, focusNode: terminalFocus),
+      extraData: {'pty': pty},
+    );
+  }
+
+  // --- アプリランチャーを開く ---
+  void _openAppLauncherWindow() {
+    FocusNode launcherFocus = FocusNode();
+    launcherFocus.addListener(() { if (mounted) setState(() {}); });
+    _addWindowToMDI(
+      title: 'アプリ・メニュー',
+      focusNode: launcherFocus,
+      width: 500.0, // 少し幅を広げました
+      height: 450.0,
+      content: StatefulBuilder(
+        builder: (context, setWinState) {
+          return Container(
+            color: const Color(0xFF2C2C2C),
+            child: ListView(
+              children: [
+                _buildAppLaunchTile(0, 'テキストエディター', 'gnome-text-editor', setWinState),
+                _buildAppLaunchTile(1, '電卓', 'gnome-calculator', setWinState),
+                _buildAppLaunchTile(2, 'システムモニター', 'gnome-system-monitor', setWinState),
+                _buildAppLaunchTile(3, 'ファイルマネージャー', 'nautilus', setWinState),
+                _buildAppLaunchTile(4, '設定', 'gnome-control-center', setWinState),
+                _buildAppLaunchTile(5, 'Firefox ブラウザ', 'firefox', setWinState),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _addWindowToMDI({required String title, required FocusNode focusNode, required Widget content, double width = 500.0, double height = 350.0, Map<String, dynamic>? extraData}) {
+    setState(() {
+      _openWindows.add({
+        'id': DateTime.now().toString(),
+        'title': title,
+        'content': content,
+        'focusNode': focusNode,
+        'x': 50.0 + (_openWindows.length * 20),
+        'y': 50.0 + (_openWindows.length * 20),
+        'width': width,
+        'height': height,
+        'isMaximized': true,
+        'isMinimized': false,
+        ...?extraData,
+      });
+    });
+  }
+
+  Widget _buildAppLaunchTile(int index, String name, String command, StateSetter setWinState) {
+    const double baseFontSize = 13.0;
+    int regKeyIdx = -1;
+    for (int i = 0; i < _regNames.length; i++) {
+      if (_regNames[i] == name) { regKeyIdx = i; break; }
+    }
+
+    return Container(
+      color: (_launcherIndex == index) ? Colors.white10 : Colors.transparent,
+      padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Focus(
+              onFocusChange: (hasFocus) {
+                if (hasFocus) { setState(() => _launcherIndex = index); setWinState(() {}); }
+              },
+              child: Builder(builder: (context) {
+                final bool isFocused = Focus.of(context).hasFocus;
+                return InkWell(
+                  onTap: () {
+                    if (name == 'テキストエディター') {
+                      _openInternalEditorWindow();
+                    } else {
+                      Process.start(command, []);
+                    }
+                    setState(() => _lastPressed = "$name を起動しました");
+                  },
+                  child: Row(
+                    children: [
+                      Icon(Icons.rocket_launch, color: isFocused ? Colors.yellow : Colors.blueAccent, size: 18),
+                      const SizedBox(width: 12),
+                      Text(name, style: TextStyle(color: isFocused ? Colors.yellow : Colors.white, fontSize: baseFontSize)),
+                    ],
+                  ),
+                );
+              }),
+            ),
+          ),
+          Focus(
+            onFocusChange: (hasFocus) => setWinState(() {}),
+            child: Builder(builder: (context) {
+              final bool isFocused = Focus.of(context).hasFocus;
+              return FocusableActionDetector(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<int>(
+                    focusColor: Colors.transparent,
+                    autofocus: true,
+                    hint: Text("キーに登録", style: TextStyle(fontSize: baseFontSize, color: isFocused ? Colors.yellow : Colors.white, fontWeight: FontWeight.bold)),
+                    dropdownColor: Colors.grey[900],
+                    icon: Icon(Icons.arrow_drop_down, color: isFocused ? Colors.yellow : Colors.white),
+                    items: List.generate(12, (i) => DropdownMenuItem(value: i, child: Text("F${i + 1}に登録", style: const TextStyle(fontSize: baseFontSize)))),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setState(() {
+                          for (int i = 0; i < _regNames.length; i++) { if (_regNames[i] == name) { _regNames[i] = null; _regCommands[i] = null; } }
+                          _regNames[val] = name; _regCommands[val] = command;
+                          _lastPressed = "$name を F${val + 1} に割り当てました";
+                        });
+                        setWinState(() {});
+                      }
+                    },
+                  ),
+                ),
+              );
+            }),
+          ),
+          const SizedBox(width: 16),
+          Focus(
+            onFocusChange: (hasFocus) => setWinState(() {}),
+            child: Builder(builder: (context) {
+              final bool isFocused = Focus.of(context).hasFocus;
+              return SizedBox(
+                width: 160,
+                child: regKeyIdx != -1
+                    ? InkWell(
+                        onTap: () {
+                          setState(() { _regNames[regKeyIdx] = null; _regCommands[regKeyIdx] = null; _lastPressed = "$name の登録を解除しました"; });
+                          setWinState(() {});
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(color: isFocused ? Colors.yellow : Colors.white, borderRadius: BorderRadius.circular(4)),
+                          child: Text("F${regKeyIdx + 1}キーに登録済み", style: TextStyle(color: Colors.black, fontSize: baseFontSize, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                        ),
+                      )
+                    : Text("未登録", style: TextStyle(color: isFocused ? Colors.yellow : Colors.white, fontSize: baseFontSize), textAlign: TextAlign.center),
+              );
+            }),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _executeRegisteredApp(String label) {
+    if (label.startsWith('F')) {
+      int fIndex = int.parse(label.substring(1)) - 1;
+      if (fIndex >= 0 && fIndex < 12 && _regNames[fIndex] != null) {
+        if (_regNames[fIndex] == 'テキストエディター') {
+          _openInternalEditorWindow();
+          setState(() => _lastPressed = "内部エディターを起動しました");
+        } else {
+          Process.start(_regCommands[fIndex]!, []);
+          setState(() => _lastPressed = "${_regNames[fIndex]} を起動しました");
+        }
+      }
+    }
+  }
+
+  void _handleAction(String label) {
+    setState(() { _currentSelection = label; });
+    if (label.startsWith('F')) {
+      int fIndex = int.parse(label.substring(1)) - 1;
+      if (fIndex >= 0 && fIndex < 12 && _regNames[fIndex] != null) {
+        _executeRegisteredApp(label);
+      } else if (label == 'F1') {
+        _openAppLauncherWindow();
+      } else {
+        setState(() => _lastPressed = "$label が押されました (未登録)");
+      }
+    }
+    if (label == 'ESC') {
+      _menuFocusNode.requestFocus();
+      setState(() => _lastPressed = "ESC が押されました");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        LogicalKeySet(LogicalKeyboardKey.escape): const FuncKeyIntent('ESC'),
+        LogicalKeySet(LogicalKeyboardKey.enter): const FuncKeyIntent('Enter'),
+        LogicalKeySet(LogicalKeyboardKey.space): const FuncKeyIntent('Space'),
+        for (var i = 1; i <= 12; i++) LogicalKeySet(LogicalKeyboardKey(0x110000000 + i)): FuncKeyIntent('F$i'),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          FuncKeyIntent: CallbackAction<FuncKeyIntent>(onInvoke: (intent) {
+            String label = intent.label;
+            if (label == 'Enter' || label == 'Space') {
+              if (_currentSelection == "Menu") { _handleShowMenu(); return null; }
+              if (_currentSelection.startsWith('F')) { _handleAction(_currentSelection); return null; }
+            }
+            _handleAction(label);
+            return null;
+          })
+        },
+        child: Scaffold(
+          body: FocusTraversalGroup(
+            policy: OrderedTraversalPolicy(),
+            child: Column(
+              children: [
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(color: Colors.black, border: Border.all(color: Colors.grey[700]!, width: 2)),
+                    child: LayoutBuilder(builder: (context, constraints) {
+                      return Stack(
+                        children: [
+                          Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                if (_currentSelection.startsWith('F') && 
+                                    _regNames[int.parse(_currentSelection.substring(1)) - 1] != null) ...[
+                                  const Icon(Icons.rocket_launch, color: Colors.yellow, size: 64),
+                                  const SizedBox(height: 16),
+                                  Text("「${_regNames[int.parse(_currentSelection.substring(1)) - 1]}」が登録されています", style: const TextStyle(color: Colors.yellow, fontSize: 24, fontWeight: FontWeight.bold)),
+                                  const SizedBox(height: 8),
+                                  const Text("Enter または Space で起動", style: TextStyle(color: Colors.grey, fontSize: 16)),
+                                ] else ...[
+                                  Text(_lastPressed, style: const TextStyle(color: Colors.greenAccent, fontSize: 18)),
+                                ]
+                              ],
+                            ),
+                          ),
+                          for (int i = 0; i < _openWindows.length; i++)
+                            Positioned(
+                              left: _openWindows[i]['isMaximized'] ? 0 : _openWindows[i]['x'],
+                              top: _openWindows[i]['isMaximized'] ? 0 : _openWindows[i]['y'],
+                              width: _openWindows[i]['isMaximized'] ? constraints.maxWidth : _openWindows[i]['width'],
+                              height: _openWindows[i]['isMinimized'] ? 34.0 : (_openWindows[i]['isMaximized'] ? constraints.maxHeight : _openWindows[i]['height']),
+                              child: _buildFloatingWindow(i, constraints),
+                            ),
+                        ],
+                      );
+                    }),
+                  ),
+                ),
+                Container(
+                  color: Colors.black87,
+                  padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                  child: Row(
+                    children: [
+                      _buildMenuButton(),
+                      ...List.generate(12, (index) => _buildKeyButton("F${index + 1}", 1.0 + ((index + 1) * 0.01))),
+                      _buildKeyButton("ESC", 1.13, defaultColor: Colors.red[900]),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildKeyButton(String label, double orderValue, {Color? defaultColor}) {
+    bool isSelected = _currentSelection == label;
+    bool isEsc = label == "ESC";
+    bool hasReg = label.startsWith('F') && _regNames[int.parse(label.substring(1)) - 1] != null;
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2.0),
+        child: FocusTraversalOrder(
+          order: NumericFocusOrder(orderValue),
+          child: SizedBox(
+            height: _buttonHeight,
+            child: ElevatedButton(
+              onFocusChange: (hasFocus) { if (hasFocus) setState(() { _currentSelection = label; }); },
+              style: ElevatedButton.styleFrom(
+                padding: EdgeInsets.zero,
+                backgroundColor: isEsc ? (isSelected ? Colors.red : Colors.red[900]) : (isSelected ? Colors.yellow : (hasReg ? Colors.blue[900] : (defaultColor ?? Colors.grey[800]))),
+                foregroundColor: isSelected ? Colors.black : Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: isEsc ? BorderRadius.circular(4) : const BorderRadius.only(bottomLeft: Radius.circular(4), bottomRight: Radius.circular(4))),
+              ),
+              onPressed: () => _handleAction(label),
+              child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMenuButton() {
+    return FocusTraversalOrder(
+      order: const NumericFocusOrder(1.0),
+      child: SizedBox(
+        width: _buttonHeight, height: _buttonHeight,
+        child: Focus(
+          focusNode: _menuFocusNode,
+          onKeyEvent: (node, event) {
+            if (event is KeyDownEvent && (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.space)) { _handleShowMenu(); return KeyEventResult.handled; }
+            return KeyEventResult.ignored;
+          },
+          onFocusChange: (hasFocus) { if (hasFocus) setState(() => _currentSelection = "Menu"); },
+          child: GestureDetector(
+            onTap: _handleShowMenu,
+            child: Container(
+              key: _menuKey,
+              decoration: BoxDecoration(color: _currentSelection == "Menu" ? Colors.yellow : Colors.transparent, shape: BoxShape.circle, border: _menuFocusNode.hasFocus ? Border.all(color: Colors.yellow, width: 2) : null),
+              child: Center(child: Icon(Icons.square, color: _currentSelection == "Menu" ? Colors.black : Colors.white, size: 20)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleShowMenu() {
+    setState(() => _currentSelection = "Menu");
+    final context = _menuKey.currentContext;
+    if (context == null) { _showActualMenu(const Offset(10, 500)); return; }
+    final RenderBox renderBox = context.findRenderObject() as RenderBox;
+    final Offset offset = renderBox.localToGlobal(Offset.zero);
+    _showActualMenu(offset);
+  }
+
+  void _showActualMenu(Offset offset) {
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(offset.dx, offset.dy - 336, offset.dx + 50, offset.dy),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: Colors.grey[700]!, width: 1)),
+      items: [
+        const PopupMenuItem(value: 'exit', child: ListTile(leading: Icon(Icons.exit_to_app, color: Colors.red), title: Text('終了', style: TextStyle(color: Colors.red)), dense: true)),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'sys_info', child: ListTile(leading: Icon(Icons.computer), title: Text('システム情報 (uname)'), dense: true)),
+        const PopupMenuItem(value: 'refresh', child: ListTile(leading: Icon(Icons.refresh), title: Text('情報の更新'), dense: true)),
+        const PopupMenuItem(value: 'maximize', child: ListTile(leading: Icon(Icons.fullscreen), title: Text('ウインドウの最大化/復元'), dense: true)),
+        const PopupMenuItem(value: 'app_launcher', child: ListTile(leading: Icon(Icons.apps), title: Text('アプリ・メニュー'), dense: true)),
+        const PopupMenuItem(value: 'terminal', child: ListTile(leading: Icon(Icons.terminal), title: Text('ターミナル'), dense: true)),
+      ],
+    ).then((value) { if (value != null) _handleMenuAction(value); setState(() => _currentSelection = ""); });
+  }
+
+  void _handleMenuAction(String value) {
+    switch (value) {
+      case 'app_launcher': _openAppLauncherWindow(); break;
+      case 'maximize': windowManager.isMaximized().then((isMax) => isMax ? windowManager.unmaximize() : windowManager.maximize()); break;
+      case 'terminal': _openTerminalWindow(); break;
+      case 'refresh': setState(() => _lastPressed = "情報を更新しました"); break;
+      case 'sys_info': Process.run('uname', ['-a']).then((result) => setState(() => _lastPressed = "System: ${result.stdout}")); break;
+      case 'exit': exit(0);
+    }
+  }
+
+  Widget _buildWindowControlButton(IconData icon, double orderValue, VoidCallback onPressed, {Color? defaultBgColor}) {
+    return FocusTraversalOrder(order: NumericFocusOrder(orderValue), child: Padding(padding: const EdgeInsets.only(left: 4.0), child: SizedBox(width: 28, height: 24, child: ElevatedButton(onPressed: onPressed, style: ElevatedButton.styleFrom(backgroundColor: defaultBgColor ?? Colors.grey[700], padding: EdgeInsets.zero, shape: const RoundedRectangleBorder()), child: Icon(icon, size: 16)))));
+  }
+
+  Widget _buildFloatingWindow(int index, BoxConstraints constraints) {
+    var win = _openWindows[index];
+    bool isMinimized = win['isMinimized'];
+    bool isMaximized = win['isMaximized'];
+    double baseOrder = (index + 1) * 10.0;
+    return Container(
+      decoration: BoxDecoration(color: Colors.black, border: Border.all(color: Colors.grey[600]!, width: 2)),
+      child: Column(
+        children: [
+          Container(
+            color: Colors.blue[900],
+            height: 30,
+            child: Row(
+              children: [
+                Expanded(child: Padding(padding: const EdgeInsets.only(left: 8), child: Text(win['title'], style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)))),
+                _buildWindowControlButton(Icons.remove, baseOrder + 0.1, () => setState(() => win['isMinimized'] = !isMinimized)),
+                _buildWindowControlButton(isMaximized ? Icons.filter_none : Icons.crop_square, baseOrder + 0.2, () => setState(() => win['isMaximized'] = !isMaximized)),
+                _buildWindowControlButton(Icons.close, baseOrder + 0.3, () { setState(() { if (win['pty'] != null) (win['pty'] as Pty).kill(); _openWindows.removeAt(index); }); }, defaultBgColor: Colors.red[700]),
+              ],
+            ),
+          ),
+          if (!isMinimized) Expanded(child: FocusTraversalOrder(order: NumericFocusOrder(baseOrder + 0.4), child: Container(decoration: BoxDecoration(border: Border.all(color: (win['focusNode'] as FocusNode).hasFocus ? Colors.yellow : Colors.transparent, width: 2)), child: win['content']))),
+        ],
+      ),
+    );
+  }
+}
+
+// 内部テキストエディターウィジェット
+class MyInternalEditor extends StatefulWidget {
+  const MyInternalEditor({super.key});
+  @override
+  State<MyInternalEditor> createState() => _MyInternalEditorState();
+}
+
+class _MyInternalEditorState extends State<MyInternalEditor> {
+  final TextEditingController _controller = TextEditingController();
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF1E1E1E),
+      child: TextField(
+        controller: _controller,
+        maxLines: null,
+        expands: true,
+        autofocus: true,
+        style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 14),
+        decoration: const InputDecoration(
+          contentPadding: EdgeInsets.all(12),
+          border: InputBorder.none,
+          hintText: 'ここにテキストを入力...',
+          hintStyle: TextStyle(color: Colors.grey),
+        ),
+      ),
+    );
+  }
+}
