@@ -23,7 +23,7 @@ on Terminal
 cd my_linux_app  
 flutter pub add xterm  
 flutter pub add flutter_pty  
-flutter pub add shared_preferences
+flutter pub add shared_preferences  
 flutter pub add file_picker
 
 .
