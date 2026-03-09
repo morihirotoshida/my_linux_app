@@ -30,4 +30,4 @@ This  well be installed xterm and flutter_pty to your my_linux_app.
 
 I, TOSHIDA, Morihiro call the system Seahorse.
 
-Thank you for your kind.
+I build the software with A.I. named Google Gemini.
