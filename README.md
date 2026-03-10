@@ -28,6 +28,11 @@ flutter pub add flutter_pty
 
 This  well be installed xterm and flutter_pty to your my_linux_app.
 
-I, TOSHIDA, Morihiro call the system Seahorse.
+I, TOSHIDA, Morihiro call the system gDE-Shell.  
+So I build the software with A.I. named Google Gemini.  
 
-I build the software with A.I. named Google Gemini.
+This is my video on youtube.com for introducing gDE-Shell a.k.a my_linux_app.  
+https://www.youtube.com/watch?v=E2bQFSKDuiM
+
+Best regards,
+Morihiro Toshida
